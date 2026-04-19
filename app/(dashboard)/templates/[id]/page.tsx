@@ -179,6 +179,9 @@ export default async function TemplateDetailPage({ params }: Props) {
                 {template.versions.map((v, idx) => {
                   const snap = v.snapshot as Record<string, unknown>;
                   const event = snap._event as string | undefined;
+                  const primaryColor = snap.primaryColor as string | undefined;
+                  const secondaryColor = snap.secondaryColor as string | undefined;
+                  const accentColor = snap.accentColor as string | undefined;
                   return (
                     <div key={v.id} className="px-4 py-3">
                       <div className="flex items-center justify-between mb-1">
@@ -194,15 +197,15 @@ export default async function TemplateDetailPage({ params }: Props) {
                       </div>
                       <p className="text-xs text-gray-500 capitalize">{event ?? "updated"}</p>
                       {/* Show color swatches from this version */}
-                      {snap.primaryColor && (
+                      {primaryColor && (
                         <div className="flex gap-1 mt-1.5">
-                          {[snap.primaryColor, snap.secondaryColor, snap.accentColor]
+                          {[primaryColor, secondaryColor, accentColor]
                             .filter(Boolean)
                             .map((c) => (
                               <div
-                                key={c as string}
+                                key={c}
                                 className="h-3 w-3 rounded-full border border-gray-200"
-                                style={{ backgroundColor: c as string }}
+                                style={{ backgroundColor: c }}
                               />
                             ))}
                         </div>
