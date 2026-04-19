@@ -338,12 +338,31 @@ export function BannerGrid({ requestId, banners: initialBanners, canGenerate, re
               </div>
             </div>
             {previewBanner.htmlContent ? (
-              <div className="border border-gray-200 rounded-lg overflow-auto bg-white">
-                <div
-                  className="m-auto"
-                  dangerouslySetInnerHTML={{ __html: previewBanner.htmlContent }}
-                />
-              </div>
+              (() => {
+                const modalDims = parseBannerSize(previewBanner.size);
+                // Scale to fit within an 800px max width
+                const maxW = 800;
+                const modalW = modalDims ? Math.min(modalDims[0], maxW) : maxW;
+                const modalScale = modalDims ? modalW / modalDims[0] : 1;
+                const modalH = modalDims ? Math.round(modalDims[1] * modalScale) : 400;
+                return (
+                  <div
+                    className="border border-gray-200 rounded-lg overflow-hidden bg-white relative mx-auto"
+                    style={{ width: modalW, height: modalH }}
+                  >
+                    <div
+                      className="absolute top-0 left-0 pointer-events-none"
+                      style={{
+                        width: modalDims ? modalDims[0] : "100%",
+                        height: modalDims ? modalDims[1] : "100%",
+                        transform: `scale(${modalScale})`,
+                        transformOrigin: "top left",
+                      }}
+                      dangerouslySetInnerHTML={{ __html: previewBanner.htmlContent }}
+                    />
+                  </div>
+                );
+              })()
             ) : (
               <p className="text-sm text-gray-500">Preview not available</p>
             )}
@@ -354,21 +373,43 @@ export function BannerGrid({ requestId, banners: initialBanners, canGenerate, re
   );
 }
 
+/** Parse "1200X628" or "1200x628" into [width, height]. Returns null if unparseable. */
+function parseBannerSize(size: string): [number, number] | null {
+  const parts = size.toUpperCase().split("X");
+  if (parts.length !== 2) return null;
+  const w = parseInt(parts[0], 10);
+  const h = parseInt(parts[1], 10);
+  if (!w || !h) return null;
+  return [w, h];
+}
+
 function BannerCard({ banner, onPreview }: { banner: VariantRecord; onPreview: () => void }) {
   const hasPreview = !!(banner.htmlContent);
   const isGenerating = ["PENDING", "GENERATING"].includes(banner.status);
 
+  // Fixed preview width in pixels (card is 2-col, roughly 280px per column)
+  const PREVIEW_W = 280;
+  const dims = parseBannerSize(banner.size);
+  const scale = dims ? PREVIEW_W / dims[0] : 0.4;
+  const previewH = dims ? Math.round(dims[1] * scale) : 112;
+
   return (
     <Card className="overflow-hidden">
       <div
-        className={`bg-gray-50 flex items-center justify-center min-h-28 relative ${hasPreview ? "cursor-pointer hover:opacity-90 transition-opacity" : ""}`}
+        className={`bg-gray-50 relative ${hasPreview ? "cursor-pointer hover:opacity-90 transition-opacity" : ""}`}
+        style={{ height: previewH }}
         onClick={hasPreview ? onPreview : undefined}
       >
         {banner.htmlContent ? (
-          <div className="w-full h-full flex items-center justify-center overflow-hidden p-1">
+          <div className="absolute inset-0 overflow-hidden">
             <div
-              className="pointer-events-none"
-              style={{ transform: "scale(0.4)", transformOrigin: "top left" }}
+              className="pointer-events-none absolute top-0 left-0"
+              style={{
+                width: dims ? dims[0] : "100%",
+                height: dims ? dims[1] : "100%",
+                transform: `scale(${scale})`,
+                transformOrigin: "top left",
+              }}
               dangerouslySetInnerHTML={{ __html: banner.htmlContent }}
             />
           </div>
