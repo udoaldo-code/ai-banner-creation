@@ -1,0 +1,620 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// System-level user role — gates what UI surfaces and API endpoints are accessible.
+/// Team-level permissions are handled separately via TeamRole.
+enum Role {
+  ADMIN // Full system access; user management; all ops
+  CREATIVE_HEAD // Template management; can review/approve; sees all requests
+  DESIGNER // Can trigger generation; assigned to requests
+  APPROVER // Review/approval only; no generation access
+  REQUESTER // Submit requests; view own work only
+}
+
+enum TeamRole {
+  OWNER // Created the team; can delete it and manage all members
+  ADMIN // Can add/remove members and edit team settings
+  MEMBER // Regular participant
+}
+
+enum RequestStatus {
+  DRAFT // Saved but not submitted; only visible to requester
+  SUBMITTED // Ready for generation; notifies Slack
+  IN_PROGRESS // Generation job is running
+  IN_REVIEW // Variants generated; awaiting reviewer decision
+  REVISION_REQUESTED // Reviewer asked for changes; requester can re-submit
+  APPROVED // Final approval; banners are production-ready
+  REJECTED // Permanently declined
+  CANCELLED // Withdrawn by requester or admin before generation
+}
+
+enum GenerationStatus {
+  PENDING // Queued but not started
+  RUNNING // AI calls in flight
+  COMPLETED // All variants processed (some may have errors)
+  FAILED // Job-level failure; request rolled back to SUBMITTED
+  CANCELLED // Manually stopped
+}
+
+enum VariantStatus {
+  PENDING // Record created, awaiting its turn
+  GENERATING // Claude call in flight for this variant
+  READY // HTML generated and stored
+  APPROVED // Explicitly approved during review
+  REJECTED // Explicitly rejected during review
+  ERROR // Generation failed for this specific variant
+}
+
+/// Decision made by a reviewer on a request round.
+/// REJECTED and REVISION_REQUESTED require a non-empty `notes` field
+/// — enforced at the API layer, not in the schema itself.
+enum ReviewDecision {
+  APPROVED // Approved as-is
+  REJECTED // Permanently rejected
+  REVISION_REQUESTED // Needs changes; re-generation expected
+}
+
+enum CommentEntityType {
+  REQUEST // Comment on the overall request
+  VARIANT // Comment on a specific generated variant
+}
+
+enum ActivityAction {
+  // Request lifecycle
+  REQUEST_CREATED
+  REQUEST_SUBMITTED
+  REQUEST_CANCELLED
+  REQUEST_STATUS_CHANGED
+  // Generation
+  GENERATION_STARTED
+  GENERATION_COMPLETED
+  GENERATION_FAILED
+  // Review
+  REVIEW_OPENED
+  REVIEW_DECISION_MADE
+  REVIEW_CHECKLIST_UPDATED
+  // Templates
+  TEMPLATE_CREATED
+  TEMPLATE_UPDATED
+  TEMPLATE_VERSION_CREATED
+  // Comments
+  COMMENT_ADDED
+  COMMENT_DELETED
+  // Admin
+  USER_ROLE_CHANGED
+  TEAM_MEMBER_ADDED
+  TEAM_MEMBER_REMOVED
+}
+
+enum SlackNotificationStatus {
+  SENT // Successfully posted
+  UPDATED // Message was later updated (e.g., after approval)
+  FAILED // Send or update failed
+  DELETED // Message was deleted from Slack
+}
+
+enum SlackNotificationType {
+  REQUEST_SUBMITTED
+  GENERATION_COMPLETE
+  REVIEW_REQUESTED
+  REVIEW_DECISION
+  REVISION_REQUESTED
+}
+
+/// Priority level of a banner request.
+/// HIGH and URGENT require a `priorityReason` — enforced at API layer.
+enum Priority {
+  NORMAL
+  HIGH
+  URGENT
+}
+
+/// Categorises a file attachment so the AI prompt builder and reviewers
+/// can treat brand materials differently from competitor references.
+enum AttachmentCategory {
+  BRAND_MATERIAL // Brand deck, guidelines, logo pack
+  SAMPLE_BANNER // Reference banners from previous campaigns
+  COMPETITOR_REFERENCE // Competitor ads for style/positioning reference
+  OTHER
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// USERS & TEAMS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  image     String?
+  role      Role     @default(REQUESTER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Auth (NextAuth)
+  accounts Account[]
+  sessions Session[]
+
+  // Domain relations
+  teamMemberships  TeamMember[]
+  ownedRequests    Request[]           @relation("RequestRequester")
+  assignedRequests Request[]           @relation("RequestAssignee")
+  triggeredRuns    GenerationRun[]
+  reviews          Review[]
+  comments         Comment[]
+  createdTemplates Template[]
+  activityLogs     ActivityLog[]
+  uploadedFiles    RequestAttachment[]
+}
+
+/// A Team groups users for scoping requests and notifications.
+/// Teams are optional — requests can exist without a team.
+model Team {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique // URL-safe identifier e.g. "growth-marketing"
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members  TeamMember[]
+  requests Request[]
+}
+
+/// Join table between User and Team with team-scoped role.
+model TeamMember {
+  id     String   @id @default(cuid())
+  teamId String
+  team   Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   TeamRole @default(MEMBER)
+
+  joinedAt DateTime @default(now())
+
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A reusable brand identity definition. Requests can reference a template to
+/// ensure brand consistency across generations.
+/// Templates are versioned — editing a template creates a new TemplateVersion
+/// so existing requests always reference the snapshot used at generation time.
+model Template {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  /// Broad grouping: "product" | "promo" | "awareness" | "seasonal" | "evergreen"
+  category    String?
+  isDefault   Boolean @default(false)
+  isArchived  Boolean @default(false)
+
+  /// Sizes this template is optimised for; empty array means it works for all sizes.
+  supportedSizes String[]
+
+  // Current (live) brand identity — also snapshotted into TemplateVersion on every edit
+  primaryColor   String // hex e.g. "#1E40AF"
+  secondaryColor String // hex e.g. "#FFFFFF"
+  accentColor    String? // hex
+  fontStack      String? // CSS font-family stack
+  logoKey        String? // S3 object key for brand logo
+
+  // AI generation hints
+  layoutStyle String  @default("balanced") // "bold" | "minimal" | "editorial" | "balanced"
+  industry    String? // "fintech" | "ecommerce" | "saas"
+  tone        String? // "professional" | "playful" | "luxury" | "urgent"
+  doNotes     String? @db.Text // Brand rules to follow — injected into prompt
+  dontNotes   String? @db.Text // Things to avoid — injected into prompt
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  versions TemplateVersion[]
+  requests Request[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Immutable snapshot of a Template at a point in time.
+/// Requests store `templateVersionId` so that later template edits
+/// never retroactively alter generated banner briefs.
+model TemplateVersion {
+  id         String   @id @default(cuid())
+  templateId String
+  template   Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  version    Int // Monotonically incrementing per template
+
+  /// Full snapshot of the template fields at time of version creation.
+  /// Stored as JSON so we never need to join back to the live Template.
+  snapshot Json
+
+  createdAt DateTime @default(now())
+
+  requests Request[] // Requests that were generated against this version
+
+  @@unique([templateId, version])
+  @@index([templateId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BANNER REQUESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A BannerRequest represents one campaign's creative brief.
+/// A single request can produce multiple GenerationRuns (e.g., after revisions).
+model Request {
+  id    String @id @default(cuid())
+  title String
+
+  // ── Required intake fields ──────────────────────────────────────────────────
+  campaignName      String
+  campaignObjective String  @db.Text // What this campaign needs to achieve
+  targetAudience    String  @db.Text // Who the banner is speaking to
+  offerMessage      String  @db.Text // The core value prop / key message
+  headline          String
+  subheadline       String?
+  ctaText           String
+  ctaUrl            String?
+
+  // ── Platform / format ───────────────────────────────────────────────────────
+  platforms String[] // ["META", "GOOGLE", "TIKTOK", "PROGRAMMATIC", "LINKEDIN"]
+  sizes     String[] // ["300x250", "728x90", "160x600", "320x50"]
+
+  // ── Priority ────────────────────────────────────────────────────────────────
+  priority       Priority @default(NORMAL)
+  priorityReason String?  @db.Text // Required when priority is HIGH or URGENT
+
+  // ── Optional creative fields ────────────────────────────────────────────────
+  copyVariants String? @db.Text // Alternative copy lines for the AI to choose from
+  notes        String? @db.Text // General notes / instructions
+
+  // ── Brand ───────────────────────────────────────────────────────────────────
+  brandColors String[] // Manual hex override — used when no template is set
+
+  deadline DateTime?
+  status   RequestStatus @default(DRAFT)
+
+  // Ownership
+  requesterId String
+  requester   User   @relation("RequestRequester", fields: [requesterId], references: [id])
+
+  // Optional: assigned designer/creative who will trigger generation
+  assignedToId String?
+  assignedTo   User?   @relation("RequestAssignee", fields: [assignedToId], references: [id])
+
+  // Optional: team this request belongs to
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id])
+
+  // Template pinned to a specific version at generation time
+  templateId        String?
+  template          Template?        @relation(fields: [templateId], references: [id])
+  templateVersionId String?
+  templateVersion   TemplateVersion? @relation(fields: [templateVersionId], references: [id])
+
+  // Relations
+  attachments    RequestAttachment[]
+  generationRuns GenerationRun[]
+  reviews        Review[] // one per review round; use latest for current state
+  comments       Comment[]
+  activityLogs   ActivityLog[]
+
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  generatedVariants GeneratedVariant[]
+
+  @@index([requesterId])
+  @@index([status])
+  @@index([teamId])
+}
+
+/// File attachments on a request.
+/// Supports multiple files per request across different categories.
+model RequestAttachment {
+  id        String  @id @default(cuid())
+  requestId String
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  filename    String
+  label       String? // User-supplied display name (defaults to filename)
+  storageKey  String // S3 object key
+  contentType String
+  sizeBytes   Int
+  category    AttachmentCategory @default(OTHER)
+
+  uploadedById String
+  uploadedBy   User   @relation(fields: [uploadedById], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([requestId])
+  @@index([requestId, category])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GENERATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A GenerationRun is one AI generation execution against a Request.
+/// A Request can have many runs (initial generation + re-generations after revision).
+/// All GeneratedVariants belong to a run.
+model GenerationRun {
+  id        String  @id @default(cuid())
+  requestId String
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  runNumber    Int // 1 = initial, 2+ = re-generation after revision
+  status       GenerationStatus @default(PENDING)
+  variantCount Int // Total variants attempted (sizes × variants-per-size)
+
+  /// Snapshot of the prompt parameters used for this run.
+  /// Preserved for audit/debugging even if the request is later modified.
+  promptSnapshot Json
+
+  triggeredById String
+  triggeredBy   User   @relation(fields: [triggeredById], references: [id])
+
+  variants GeneratedVariant[]
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  error       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([requestId, runNumber])
+  @@index([requestId])
+}
+
+/// One AI-generated banner — a specific size + variant number within a GenerationRun.
+model GeneratedVariant {
+  id              String        @id @default(cuid())
+  requestId       String
+  request         Request       @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  generationRunId String
+  generationRun   GenerationRun @relation(fields: [generationRunId], references: [id], onDelete: Cascade)
+
+  size         String // "300x250"
+  variant      Int // 1, 2, 3
+  variantLabel String? // "Primary", "Minimal", "Dark" — set post-generation
+
+  status VariantStatus @default(PENDING)
+
+  // Storage
+  storageKey String? // S3 object key
+  storageUrl String? // Cached presigned URL — not persisted, enriched at read time
+
+  // AI data
+  htmlContent String? @db.Text
+  aiPrompt    String? @db.Text
+  aiOutput    Json? // Raw API response metadata (model, usage, stop_reason)
+  durationMs  Int? // Wall-clock time for this variant's generation
+
+  error String?
+
+  comments Comment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([generationRunId, size, variant])
+  @@index([requestId])
+  @@index([generationRunId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REVIEWS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A Review represents one round of human review on a Request.
+/// When a revision is requested and re-generation happens, a new Review row
+/// is created (roundNumber increments). This preserves the full review history.
+/// Use `reviews { orderBy: { roundNumber: desc }, take: 1 }` to get the current review.
+model Review {
+  id        String  @id @default(cuid())
+  requestId String // Not @unique — a request can have multiple review rounds
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  reviewerId String?
+  reviewer   User?   @relation(fields: [reviewerId], references: [id])
+
+  roundNumber Int             @default(1) // Tracks revision cycles
+  decision    ReviewDecision?
+  /// Required when decision is REJECTED or REVISION_REQUESTED.
+  /// Enforced at the API layer (not a DB constraint) to allow saving
+  /// a partial review before submitting a final decision.
+  notes       String?         @db.Text
+
+  // Slack message tracking for updating interactive approval message
+  slackMsgTs     String?
+  slackChannelId String?
+
+  checklistItems ReviewChecklistItem[]
+
+  decidedAt DateTime? // Set when decision is made
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([requestId])
+}
+
+/// A checklist item within a review — used to ensure reviewers cover all
+/// brand-safety and quality checks before making a decision.
+/// Items are created per-review (not reused) so each round can have custom checks.
+model ReviewChecklistItem {
+  id       String @id @default(cuid())
+  reviewId String
+  review   Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  label     String // "Brand colors correct", "CTA text accurate", "No competitor mentions"
+  checked   Boolean   @default(false)
+  checkedAt DateTime?
+  notes     String? // Optional per-item notes
+
+  sortOrder Int @default(0) // For UI ordering
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([reviewId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMMENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Threaded comments — can be attached to a Request or a specific GeneratedVariant.
+/// Soft-deleted (deletedAt) so thread structure is preserved even when content is removed.
+model Comment {
+  id         String            @id @default(cuid())
+  entityType CommentEntityType
+  requestId  String
+  request    Request           @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  // Set when entityType = VARIANT
+  variantId String?
+  variant   GeneratedVariant? @relation(fields: [variantId], references: [id])
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id])
+
+  body String @db.Text
+
+  // Self-referential for threading (replies)
+  parentId String?
+  parent   Comment?  @relation("CommentThread", fields: [parentId], references: [id])
+  replies  Comment[] @relation("CommentThread")
+
+  deletedAt DateTime? // Soft delete — body replaced with "[deleted]" in UI
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([requestId])
+  @@index([variantId])
+  @@index([parentId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIT LOG
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Append-only audit trail. Every significant action writes one row.
+/// Never updated or deleted — provides a tamper-evident history.
+model ActivityLog {
+  id String @id @default(cuid())
+
+  // What entity this event is about
+  entityType String // "Request" | "GenerationRun" | "Review" | "Template" | "User" | "Team"
+  entityId   String
+
+  action ActivityAction
+
+  // Who did it (null = system action)
+  actorId String?
+  actor   User?   @relation(fields: [actorId], references: [id])
+
+  // Optional FK for direct request association (enables fast per-request log fetch)
+  requestId String?
+  request   Request? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+
+  /// Structured context: old/new values, error details, IDs of related entities, etc.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([requestId])
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SLACK NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Tracks every Slack message posted by the app.
+/// Indexed by (channelId, messageTs) for fast lookup when updating messages.
+/// Slack is a secondary surface — this table is the source of truth for message state.
+model SlackNotification {
+  id String @id @default(cuid())
+
+  type   SlackNotificationType
+  status SlackNotificationStatus @default(SENT)
+
+  // The entity this notification is about
+  entityType String
+  entityId   String
+
+  // Slack message coordinates
+  channelId String
+  messageTs String
+
+  /// The Block Kit payload sent — stored for debugging and potential replay
+  payload Json?
+  error   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([channelId, messageTs])
+  @@index([entityType, entityId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEXTAUTH — required by next-auth v4 + PrismaAdapter
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
