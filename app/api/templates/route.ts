@@ -6,7 +6,7 @@ import { logActivity } from "@/lib/activity";
 import { z } from "zod";
 import type { Role } from "@/types";
 
-export const templateSchema = z.object({
+const templateSchema = z.object({
   name: z.string().min(2, "Name is required"),
   description: z.string().optional(),
   category: z.string().optional(),
