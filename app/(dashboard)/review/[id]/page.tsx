@@ -106,7 +106,6 @@ export default async function ReviewDetailPage({ params }: Props) {
 
       <ReviewPanel
         requestId={id}
-        reviewId={latestReview?.id}
         banners={banners}
         checklistItems={latestReview?.checklistItems ?? []}
         existingDecision={latestReview?.decision ?? null}
