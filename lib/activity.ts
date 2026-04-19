@@ -18,6 +18,7 @@
  */
 
 import { db } from "@/lib/db";
+import { Prisma } from "@prisma/client";
 import type { ActivityAction } from "@/types";
 
 interface LogActivityParams {
@@ -38,7 +39,7 @@ export async function logActivity(params: LogActivityParams): Promise<void> {
         entityId: params.entityId,
         actorId: params.actorId ?? null,
         requestId: params.requestId ?? null,
-        metadata: params.metadata ?? undefined,
+        metadata: params.metadata ? (params.metadata as Prisma.InputJsonValue) : undefined,
       },
     });
   } catch (err) {

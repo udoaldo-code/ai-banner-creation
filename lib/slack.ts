@@ -28,7 +28,7 @@
  *   Event Subscriptions: not required for this integration
  */
 
-import { WebClient, type Block, type KnownBlock } from "@slack/web-api";
+import { WebClient, type Block, type KnownBlock, type ActionsBlockElement } from "@slack/web-api";
 
 // ── Client (lazy, singleton) ──────────────────────────────────────────────────
 
@@ -77,13 +77,13 @@ function context(elements: string[]): KnownBlock {
   };
 }
 
-function linkButton(label: string, url: string, style?: "primary" | "danger"): object {
+function linkButton(label: string, url: string, style?: "primary" | "danger"): ActionsBlockElement {
   return {
     type: "button",
     text: { type: "plain_text", text: label },
     url,
     ...(style ? { style } : {}),
-  };
+  } as ActionsBlockElement;
 }
 
 function actionButton(
@@ -91,14 +91,14 @@ function actionButton(
   actionId: string,
   value: string,
   style?: "primary" | "danger"
-): object {
+): ActionsBlockElement {
   return {
     type: "button",
     text: { type: "plain_text", text: label },
     action_id: actionId,
     value,
     ...(style ? { style } : {}),
-  };
+  } as ActionsBlockElement;
 }
 
 function priorityBadge(priority: string): string {

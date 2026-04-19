@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { canViewAllRequests } from "@/lib/permissions";
+import { canViewAllRequests, canAdmin } from "@/lib/permissions";
 import { db } from "@/lib/db";
 import { deleteObject } from "@/lib/storage";
 import type { Role } from "@/types";
