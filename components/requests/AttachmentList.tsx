@@ -116,11 +116,16 @@ export function AttachmentList({ requestId, canDelete = false, canUpload = false
 
         const { uploadUrl, key } = await presignRes.json();
 
-        await fetch(uploadUrl, {
+        const putRes = await fetch(uploadUrl, {
           method: "PUT",
           body: file,
           headers: { "Content-Type": file.type || "application/octet-stream" },
         });
+
+        if (!putRes.ok) {
+          alert(`Upload to storage failed for ${file.name} (${putRes.status}). Check that S3 credentials and bucket are configured.`);
+          continue;
+        }
 
         const regRes = await fetch(`/api/requests/${requestId}/attachments`, {
           method: "POST",

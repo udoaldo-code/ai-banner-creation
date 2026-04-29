@@ -23,6 +23,13 @@ export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  if (!process.env.S3_ACCESS_KEY_ID || !process.env.S3_SECRET_ACCESS_KEY) {
+    return NextResponse.json(
+      { error: "File storage is not configured on this server. Set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY in environment variables." },
+      { status: 503 }
+    );
+  }
+
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 
