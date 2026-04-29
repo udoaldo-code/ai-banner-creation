@@ -11,6 +11,7 @@ import {
   type RequestStatus,
   type ReviewDecision,
 } from "@/types";
+import { parseBannerSize } from "@/lib/banner-utils";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -289,20 +290,40 @@ export function ReviewPanel({
                         } ${isReviewable ? "cursor-pointer" : ""}`}
                         onClick={() => isReviewable && setPreviewIndex(globalIdx)}
                       >
-                        {/* Thumbnail */}
-                        <div className={`flex h-36 items-center justify-center overflow-hidden ${VARIANT_OVERLAY[status] ?? ""}`}>
-                          {banner.htmlContent ? (
+                          {/* Thumbnail */}
+                        {(() => {
+                          const dims = parseBannerSize(banner.size);
+                          const PREVIEW_W = 220;
+                          const scale = dims ? PREVIEW_W / dims[0] : 0.32;
+                          const previewH = dims ? Math.round(dims[1] * scale) : 144;
+                          return (
                             <div
-                              className="pointer-events-none"
-                              style={{ transform: "scale(0.32)", transformOrigin: "top left" }}
-                              dangerouslySetInnerHTML={{ __html: banner.htmlContent }}
-                            />
-                          ) : status === "ERROR" ? (
-                            <span className="text-xs text-red-400 px-3 text-center">{banner.error ?? "Error"}</span>
-                          ) : (
-                            <span className="text-xs text-gray-300">No preview</span>
-                          )}
-                        </div>
+                              className={`relative overflow-hidden ${VARIANT_OVERLAY[status] ?? ""}`}
+                              style={{ height: previewH }}
+                            >
+                              {banner.htmlContent ? (
+                                <div
+                                  className="pointer-events-none absolute top-0 left-0"
+                                  style={{
+                                    width: dims ? dims[0] : "100%",
+                                    height: dims ? dims[1] : "100%",
+                                    transform: `scale(${scale})`,
+                                    transformOrigin: "top left",
+                                  }}
+                                  dangerouslySetInnerHTML={{ __html: banner.htmlContent }}
+                                />
+                              ) : status === "ERROR" ? (
+                                <div className="flex h-full items-center justify-center px-3">
+                                  <span className="text-xs text-red-400 text-center">{banner.error ?? "Error"}</span>
+                                </div>
+                              ) : (
+                                <div className="flex h-full items-center justify-center">
+                                  <span className="text-xs text-gray-300">No preview</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* Status icon overlay (top-right) */}
                         {status === "APPROVED" && (
@@ -610,10 +631,30 @@ export function ReviewPanel({
             {/* Banner content */}
             <div className="flex-1 overflow-auto bg-gray-50 flex items-center justify-center p-6">
               {previewBanner.htmlContent ? (
-                <div
-                  className="bg-white shadow-lg"
-                  dangerouslySetInnerHTML={{ __html: previewBanner.htmlContent }}
-                />
+                (() => {
+                  const modalDims = parseBannerSize(previewBanner.size);
+                  const maxW = 900;
+                  const modalW = modalDims ? Math.min(modalDims[0], maxW) : maxW;
+                  const modalScale = modalDims ? modalW / modalDims[0] : 1;
+                  const modalH = modalDims ? Math.round(modalDims[1] * modalScale) : 400;
+                  return (
+                    <div
+                      className="relative overflow-hidden bg-white shadow-lg"
+                      style={{ width: modalW, height: modalH }}
+                    >
+                      <div
+                        className="absolute top-0 left-0 pointer-events-none"
+                        style={{
+                          width: modalDims ? modalDims[0] : "100%",
+                          height: modalDims ? modalDims[1] : "100%",
+                          transform: `scale(${modalScale})`,
+                          transformOrigin: "top left",
+                        }}
+                        dangerouslySetInnerHTML={{ __html: previewBanner.htmlContent }}
+                      />
+                    </div>
+                  );
+                })()
               ) : (
                 <p className="text-sm text-gray-400">Preview not available</p>
               )}

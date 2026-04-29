@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { VARIANT_STATUS_COLORS, type VariantStatus, type RequestStatus } from "@/types";
+import { parseBannerSize } from "@/lib/banner-utils";
 
 interface VariantRecord {
   id: string;
@@ -371,16 +372,6 @@ export function BannerGrid({ requestId, banners: initialBanners, canGenerate, re
       )}
     </div>
   );
-}
-
-/** Parse "1200X628" or "1200x628" into [width, height]. Returns null if unparseable. */
-function parseBannerSize(size: string): [number, number] | null {
-  const parts = size.toUpperCase().split("X");
-  if (parts.length !== 2) return null;
-  const w = parseInt(parts[0], 10);
-  const h = parseInt(parts[1], 10);
-  if (!w || !h) return null;
-  return [w, h];
 }
 
 function BannerCard({ banner, onPreview }: { banner: VariantRecord; onPreview: () => void }) {
