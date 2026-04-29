@@ -43,9 +43,15 @@ export async function POST(req: NextRequest, { params }: Context) {
     );
   }
 
-  const latestReview = request.reviews[0];
+  let latestReview = request.reviews[0];
   if (!latestReview) {
-    return NextResponse.json({ error: "No open review found for this request" }, { status: 404 });
+    // Review row missing (e.g. partial job failure) — create it now so the reviewer isn't blocked
+    latestReview = await db.review.create({
+      data: {
+        requestId,
+        roundNumber: 1,
+      },
+    });
   }
 
   const newStatus: RequestStatus =
