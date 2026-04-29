@@ -18,13 +18,19 @@ export const ALLOWED_ATTACHMENT_TYPES = [
   "application/zip",
 ];
 
+// R2 uses "auto" in their docs but AWS SDK v3 rejects it for hostname/signing.
+// When using a custom endpoint (R2), normalise "auto" → "us-east-1" (R2 ignores the value).
+const resolvedRegion = (() => {
+  const r = process.env.S3_REGION ?? "us-east-1";
+  return r === "auto" ? "us-east-1" : r;
+})();
+
 const s3 = new S3Client({
-  region: process.env.S3_REGION ?? "us-east-1",
+  region: resolvedRegion,
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY_ID ?? "",
     secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? "",
   },
-  // Cloudflare R2 or other S3-compatible endpoint:
   ...(process.env.S3_ENDPOINT ? { endpoint: process.env.S3_ENDPOINT } : {}),
 });
 
