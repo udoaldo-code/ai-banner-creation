@@ -96,36 +96,23 @@ export function AttachmentList({ requestId, canDelete = false, canUpload = false
       setUploadProgress(`Uploading ${i + 1}/${arr.length}: ${file.name}`);
 
       try {
-        const presignRes = await fetch("/api/uploads/presign", {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("context", "attachment");
+        fd.append("resourceId", requestId);
+
+        const uploadRes = await fetch("/api/uploads/presign", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            context: "attachment",
-            resourceId: requestId,
-            filename: file.name,
-            contentType: file.type || "application/octet-stream",
-            size: file.size,
-          }),
+          body: fd,
         });
 
-        if (!presignRes.ok) {
-          const err = await presignRes.json();
-          alert(`Upload failed: ${err.error}`);
+        if (!uploadRes.ok) {
+          const err = await uploadRes.json().catch(() => ({}));
+          alert(`Upload failed for ${file.name}: ${err.error ?? uploadRes.statusText}`);
           continue;
         }
 
-        const { uploadUrl, key } = await presignRes.json();
-
-        const putRes = await fetch(uploadUrl, {
-          method: "PUT",
-          body: file,
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-        });
-
-        if (!putRes.ok) {
-          alert(`Upload to storage failed for ${file.name} (${putRes.status}). Check that S3 credentials and bucket are configured.`);
-          continue;
-        }
+        const { key } = await uploadRes.json();
 
         const regRes = await fetch(`/api/requests/${requestId}/attachments`, {
           method: "POST",
@@ -143,8 +130,8 @@ export function AttachmentList({ requestId, canDelete = false, canUpload = false
           const created: Attachment = await regRes.json();
           setAttachments((prev) => [...prev, created]);
         }
-      } catch {
-        alert(`Upload failed for ${file.name}`);
+      } catch (err) {
+        alert(`Upload failed for ${file.name}: ${(err as Error).message}`);
       }
     }
 

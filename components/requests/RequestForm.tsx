@@ -156,38 +156,23 @@ export function RequestForm({ defaultValues, requestId }: RequestFormProps) {
         const { file, category, label } = pendingFiles[i];
         setUploadProgress(`Uploading ${i + 1}/${pendingFiles.length}: ${file.name}`);
 
-        // 1. Get presigned PUT URL
-        const presignRes = await fetch("/api/uploads/presign", {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("context", "attachment");
+        fd.append("resourceId", reqId);
+
+        const uploadRes = await fetch("/api/uploads/presign", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            context: "attachment",
-            resourceId: reqId,
-            filename: file.name,
-            contentType: file.type || "application/octet-stream",
-            size: file.size,
-          }),
+          body: fd,
         });
 
-        if (!presignRes.ok) {
-          const err = await presignRes.json();
-          throw new Error(`Presign failed for ${file.name}: ${err.error}`);
+        if (!uploadRes.ok) {
+          const err = await uploadRes.json().catch(() => ({}));
+          throw new Error(`Upload failed for ${file.name}: ${err.error ?? uploadRes.statusText}`);
         }
 
-        const { uploadUrl, key } = await presignRes.json();
+        const { key } = await uploadRes.json();
 
-        // 2. Upload directly to S3
-        const putRes = await fetch(uploadUrl, {
-          method: "PUT",
-          body: file,
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-        });
-
-        if (!putRes.ok) {
-          throw new Error(`Upload to storage failed for ${file.name}`);
-        }
-
-        // 3. Register with the API
         await fetch(`/api/requests/${reqId}/attachments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

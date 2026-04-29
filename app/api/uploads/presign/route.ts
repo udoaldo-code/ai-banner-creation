@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import {
-  getPresignedPutUrl,
+  uploadFile,
   guidelinesStorageKey,
   logoStorageKey,
   MAX_ATTACHMENT_BYTES,
@@ -10,40 +10,37 @@ import {
 import { db } from "@/lib/db";
 import path from "path";
 
-type UploadContext = "attachment" | "logo";
-
 // POST /api/uploads/presign
-// Body: { context: "attachment" | "logo", resourceId: string, filename: string, contentType: string, size: number, category?: string }
-// Returns: { uploadUrl: string, key: string }
-//
-// After the browser finishes the PUT to uploadUrl, it should call:
-//   POST /api/requests/[id]/attachments  { storageKey, filename, contentType, sizeBytes, category }  — for attachments
-//   PATCH /api/templates/[id] { logoKey: key }                                                         — for logos
+// Accepts multipart/form-data: file, context, resourceId
+// Returns: { key: string }
+// Renamed "presign" kept for backward compatibility — now proxies through server to avoid CORS.
 export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   if (!process.env.S3_ACCESS_KEY_ID || !process.env.S3_SECRET_ACCESS_KEY) {
     return NextResponse.json(
-      { error: "File storage is not configured on this server. Set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY in environment variables." },
+      { error: "File storage is not configured. Set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY." },
       { status: 503 }
     );
   }
 
-  const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-
-  const { context, resourceId, filename, contentType, size } = body as {
-    context: UploadContext;
-    resourceId: string;
-    filename: string;
-    contentType: string;
-    size: number;
-  };
-
-  if (!context || !resourceId || !filename || !contentType) {
-    return NextResponse.json({ error: "context, resourceId, filename, contentType are required" }, { status: 400 });
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
   }
+
+  const file = formData.get("file") as File | null;
+  const context = formData.get("context") as string | null;
+  const resourceId = formData.get("resourceId") as string | null;
+
+  if (!file || !context || !resourceId) {
+    return NextResponse.json({ error: "file, context, resourceId are required" }, { status: 400 });
+  }
+
+  const contentType = file.type || "application/octet-stream";
 
   if (!ALLOWED_ATTACHMENT_TYPES.includes(contentType)) {
     return NextResponse.json(
@@ -52,17 +49,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (size > MAX_ATTACHMENT_BYTES) {
+  if (file.size > MAX_ATTACHMENT_BYTES) {
     return NextResponse.json({ error: "File too large. Maximum 20 MB." }, { status: 413 });
   }
 
-  // Sanitize filename — keep only the basename, strip path traversal
-  const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const safeName = path.basename(file.name).replace(/[^a-zA-Z0-9._-]/g, "_");
 
   let key: string;
 
   if (context === "attachment") {
-    // Verify the request belongs to the session user or is accessible to admins
     const request = await db.request.findUnique({ where: { id: resourceId } });
     if (!request) return NextResponse.json({ error: "Request not found" }, { status: 404 });
 
@@ -72,7 +67,6 @@ export async function POST(req: NextRequest) {
 
     key = guidelinesStorageKey(resourceId, safeName);
   } else if (context === "logo") {
-    // Only CREATIVE_HEAD and ADMIN can upload template logos
     if (!["ADMIN", "CREATIVE_HEAD", "DESIGNER"].includes(session.user.role)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
@@ -81,7 +75,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid context" }, { status: 400 });
   }
 
-  const uploadUrl = await getPresignedPutUrl(key, contentType);
+  const buffer = Buffer.from(await file.arrayBuffer());
+  await uploadFile(key, buffer, contentType);
 
-  return NextResponse.json({ uploadUrl, key });
+  return NextResponse.json({ key });
 }
