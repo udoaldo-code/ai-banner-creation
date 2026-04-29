@@ -108,7 +108,7 @@ export function AttachmentList({ requestId, canDelete = false, canUpload = false
 
         if (!uploadRes.ok) {
           const err = await uploadRes.json().catch(() => ({}));
-          alert(`Upload failed for ${file.name}: ${err.error ?? uploadRes.statusText}`);
+          alert(`Upload failed for ${file.name} [${uploadRes.status}]: ${err.error ?? "unknown error"}`);
           continue;
         }
 

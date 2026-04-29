@@ -75,8 +75,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid context" }, { status: 400 });
   }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  await uploadFile(key, buffer, contentType);
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(await file.arrayBuffer());
+  } catch (err) {
+    return NextResponse.json({ error: `Failed to read file: ${(err as Error).message}` }, { status: 400 });
+  }
+
+  try {
+    await uploadFile(key, buffer, contentType);
+  } catch (err) {
+    console.error("[upload] R2 upload failed:", err);
+    return NextResponse.json(
+      { error: `Storage upload failed: ${(err as Error).message}` },
+      { status: 502 }
+    );
+  }
 
   return NextResponse.json({ key });
 }
